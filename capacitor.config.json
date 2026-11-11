@@ -1,0 +1,11 @@
+{
+  "appId": "com.mukallaf.app",
+  "appName": "مُكَلَّف",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}
