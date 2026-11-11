@@ -425,7 +425,7 @@ function render(){
   if(S.canInstall && !S.installed) h+=`<div class="banner" style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap"><span>📲 يمكنك تثبيت هذا التطبيق على هاتفك أو حاسوبك ليعمل كتطبيق مستقل بأيقونة خاصة.</span><button class="btn gold sm" data-act="installApp">تثبيت الآن</button></div>`;
   if(S.mode==="local") h+=`<div class="banner">البيانات محفوظة على هذا الجهاز فقط ولا تتزامن مع أي جهاز آخر. اذهب إلى «الفئات والإعدادات» لربط هذا الجهاز بجهاز آخر.</div>`;
   if(S.mode==="sync" && S.syncErr) h+=`<div class="banner err">تعذّر الاتصال بالإنترنت لمزامنة البيانات. ستُحفظ تعديلاتك محلياً وتُرسَل عند عودة الاتصال.</div>`;
-  { const tr=trialRec(); if(!tr.activated){ const dl=Math.ceil(trialDaysLeft()); h+=`<div class="banner">فترة تجريبية: متبقٍ ${dl} ${dl===1?"يوم":"أيام"}.</div>`; } }
+  { const tr=trialRec(); if(!tr.activated){ const dl=Math.ceil(trialDaysLeft()); h+=`<div class="banner" style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap"><span>فترة تجريبية: متبقٍ ${dl} ${dl===1?"يوم":"أيام"}.</span><button class="btn gold sm" data-act="enterKey">🔑 لديك مفتاح تفعيل؟ فعّل الآن</button></div>`; } }
   const t = S.view==="task" ? S.tasks.find(x=>x.id===S.taskId) : null;
   if(S.view==="task" && !t) S.view="home";
   if(t && !((TYPE_TABS[t.type]||TYPE_TABS.build).some(([k])=>k===S.tab))) S.tab="summary";
@@ -557,7 +557,11 @@ function linkingCard(){
 function settingsView(){
   const c=cfg(); const own=S.isOwner&&S.canWrite;
   const ty=S.setType||"build";
-  let h=linkingCard();
+  const tr=trialRec();
+  let h=`<div class="card" style="margin-bottom:14px"><h3>التفعيل</h3>
+   ${tr.activated?`<p class="note">✅ التطبيق مُفعَّل.</p>`:`<p class="note">فترة تجريبية: متبقٍ ${Math.ceil(trialDaysLeft())} ${Math.ceil(trialDaysLeft())===1?"يوم":"أيام"}.</p>
+   <div class="acts"><button class="btn gold sm" data-act="enterKey">🔑 إدخال مفتاح التفعيل</button></div>`}</div>`;
+  h+=linkingCard();
   h+=`<h2>الفئات والإعدادات</h2><p class="note" style="margin-top:-6px">${own?"أضف أو عدّل أو احذف البنود ثم اضغط «حفظ».":"يعدّلها صاحب المال فقط."}</p>
   <div class="tabs">${Object.entries(TYPES).map(([k,v])=>`<button class="tab ${ty===k?"on":""}" data-settype="${k}">${v.label}</button>`).join("")}</div>
   <div class="two"><div class="card"><h3>بنود المصاريف — ${TYPES[ty].label}</h3>${editList("cats."+ty,c.cats[ty],own)}</div>
@@ -907,6 +911,21 @@ function bindView(t,p){
     }
     if(a==="syncNow"){ el.disabled=true; await pullAndMerge(); await pushAllLocal(); el.disabled=false; toast("تمت المزامنة"); }
     if(a==="unlinkSync"){ confirmBox("إلغاء الربط مع الجهاز الآخر؟ ستبقى بياناتك محفوظة على هذا الجهاز.",unlinkSync,"نعم، ألغِ"); }
+    if(a==="enterKey"){
+      const tr=trialRec();
+      modal(`<h3>تفعيل التطبيق</h3>
+       <div class="row" style="justify-content:center;gap:10px;margin:6px 0"><span>رمز الجهاز</span><b style="direction:ltr;font-size:17px">${esc(tr.code)}</b></div>
+       <p class="note">أرسل رمز الجهاز هذا لمن اشتريت منه التطبيق، وأدخل رمز التفعيل الذي يرسله لك.</p>
+       <form id="f"><input name="key" placeholder="رمز التفعيل" style="width:100%;box-sizing:border-box;direction:ltr;text-align:center;font-size:18px;padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:10px">
+       <p class="note" id="st" style="color:var(--red)"></p>
+       <div class="acts"><button class="btn gold" type="submit">تفعيل</button><button class="btn ghost" type="button" id="cx">إلغاء</button></div></form>`,(m,close)=>{
+        m.querySelector("#cx").onclick=close;
+        m.querySelector("#f").onsubmit=ev=>{ ev.preventDefault(); const v=ev.target.key.value;
+          if(activate(v)){ close(); toast("تم التفعيل، شكراً لك"); render(); }
+          else m.querySelector("#st").textContent="رمز التفعيل غير صحيح";
+        };
+      });
+    }
     if(a==="tplStages"){ const st=S.stages.filter(s=>s.taskId===t.id); const tpl=(cfg().stages[t.type]||[]).filter(n=>!st.some(s=>s.name===n)); el.disabled=true;
       try{ let i=0; for(const n of tpl){ await put("stages",uid(),{taskId:t.id,name:n,weight:1,percent:0,order:Date.now()+i++}); } toast("أُضيفت مراحل القالب"); }catch(e){} }
     if(a==="saveCfg"){ try{ await saveCfg(readLists()); toast("حُفظت الفئات"); }catch(e){} }
