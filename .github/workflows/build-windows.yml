@@ -1,0 +1,64 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'electron/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: electron
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Windows installer + portable exe
+        run: npx electron-builder --win --publish=never
+
+      - name: List build output
+        run: Get-ChildItem -Recurse dist | Select-Object FullName
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mukallaf-windows
+          path: |
+            electron/dist/*.exe
+          if-no-files-found: error
+
+      - name: Stage files outside repo tree
+        shell: bash
+        run: |
+          mkdir -p /tmp/win-dist
+          cp dist/*.exe /tmp/win-dist/ || true
+          ls -la /tmp/win-dist
+
+      - name: Publish installer to exe-latest branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cd "$GITHUB_WORKSPACE"
+          git checkout --orphan exe-latest
+          git rm -rf . >/dev/null 2>&1 || true
+          cp /tmp/win-dist/*.exe .
+          git add -- *.exe
+          git commit -m "Windows build from ${GITHUB_SHA}"
+          git push -f origin exe-latest
