@@ -321,6 +321,50 @@ async function joinWithCode(input){
 }
 function unlinkSync(){ clearSyncCfg(); render(); toast("أُلغي الربط، البيانات بقيت محفوظة على هذا الجهاز"); }
 
+/* ================= trial / activation ================= */
+const TRIAL_DAYS=3;
+const TRIAL_KEY="mukallaf-trial-v1";
+const TRIAL_SECRET="mkf-2026-zm-7f3q";
+function genDeviceCode(){ const a=new Uint32Array(1); crypto.getRandomValues(a); return String(100000+(a[0]%900000)); }
+function expectedActivationKey(code){
+  let s=TRIAL_SECRET+":"+code, h=0;
+  for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0;
+  const k=(h%900000)+100000;
+  return String(k).replace(/(\d{3})(\d{3})/,"$1-$2");
+}
+function trialRec(){
+  let t; try{ t=JSON.parse(localStorage.getItem(TRIAL_KEY)||"null"); }catch(e){ t=null; }
+  if(!t||!t.code){ t={start:Date.now(),code:genDeviceCode(),activated:false}; try{localStorage.setItem(TRIAL_KEY,JSON.stringify(t));}catch(e){} }
+  return t;
+}
+function trialDaysLeft(){ const t=trialRec(); return Math.max(0,TRIAL_DAYS-((Date.now()-t.start)/86400000)); }
+function trialLocked(){ const t=trialRec(); return !t.activated && trialDaysLeft()<=0; }
+function activate(input){
+  const t=trialRec();
+  const norm=(input||"").replace(/[^0-9]/g,"");
+  const want=expectedActivationKey(t.code).replace(/[^0-9]/g,"");
+  if(norm===want){ t.activated=true; try{localStorage.setItem(TRIAL_KEY,JSON.stringify(t));}catch(e){} return true; }
+  return false;
+}
+function renderLock(){
+  const t=trialRec();
+  $("#nav").innerHTML=""; $("#fab").style.display="none";
+  $("#app").innerHTML=`<div class="card" style="max-width:420px;margin:60px auto;text-align:center">
+    <div class="big" style="font-size:40px">🔒</div>
+    <h2>انتهت الفترة التجريبية</h2>
+    <p class="note">انتهت مدة التجربة (${TRIAL_DAYS} أيام). للاستمرار في استخدام التطبيق، أدخل رمز التفعيل الذي حصلت عليه.</p>
+    <div class="row" style="justify-content:center;gap:10px;margin:14px 0"><span>رمز الجهاز</span><b style="direction:ltr;font-size:18px">${esc(t.code)}</b></div>
+    <form id="actf" style="display:flex;flex-direction:column;gap:10px;align-items:center">
+      <input name="key" placeholder="رمز التفعيل" style="direction:ltr;text-align:center;font-size:18px;padding:10px;border:1px solid var(--line);border-radius:10px;width:200px">
+      <p class="note" id="actErr" style="color:var(--red)"></p>
+      <button class="btn gold" type="submit">تفعيل</button>
+    </form>
+  </div>`;
+  $("#actf").onsubmit=ev=>{ ev.preventDefault(); const v=ev.target.key.value;
+    if(activate(v)){ toast("تم التفعيل، شكراً لك"); render(); }
+    else $("#actErr").textContent="رمز التفعيل غير صحيح";
+  };
+}
 async function boot(){
   loadLocal();
   try{ let id=localStorage.getItem(ID_KEY); if(!id){ id=uid(); localStorage.setItem(ID_KEY,id); } S.myId=id; }catch(e){ S.myId=uid(); }
@@ -371,6 +415,7 @@ function calc(t){
 
 /* ================= render ================= */
 function render(){
+  if(trialLocked()){ renderLock(); return; }
   $("#role").textContent = S.mode==="local" ? "وضع محلي (غير مربوط)" : (S.isOwner ? "أنت: صاحب المال" : "أنت: المُكلَّف");
   const top = (S.view==="task")?"home":(S.view==="party")?"parties":S.view;
   $("#nav").innerHTML=[["home","التكليفات"],["parties","الأطراف"],["settings","الفئات والإعدادات"]].map(([k,l])=>`<button data-nav="${k}" class="${top===k?"on":""}">${l}</button>`).join("");
@@ -380,6 +425,7 @@ function render(){
   if(S.canInstall && !S.installed) h+=`<div class="banner" style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap"><span>📲 يمكنك تثبيت هذا التطبيق على هاتفك أو حاسوبك ليعمل كتطبيق مستقل بأيقونة خاصة.</span><button class="btn gold sm" data-act="installApp">تثبيت الآن</button></div>`;
   if(S.mode==="local") h+=`<div class="banner">البيانات محفوظة على هذا الجهاز فقط ولا تتزامن مع أي جهاز آخر. اذهب إلى «الفئات والإعدادات» لربط هذا الجهاز بجهاز آخر.</div>`;
   if(S.mode==="sync" && S.syncErr) h+=`<div class="banner err">تعذّر الاتصال بالإنترنت لمزامنة البيانات. ستُحفظ تعديلاتك محلياً وتُرسَل عند عودة الاتصال.</div>`;
+  { const tr=trialRec(); if(!tr.activated){ const dl=Math.ceil(trialDaysLeft()); h+=`<div class="banner">فترة تجريبية: متبقٍ ${dl} ${dl===1?"يوم":"أيام"}.</div>`; } }
   const t = S.view==="task" ? S.tasks.find(x=>x.id===S.taskId) : null;
   if(S.view==="task" && !t) S.view="home";
   if(t && !((TYPE_TABS[t.type]||TYPE_TABS.build).some(([k])=>k===S.tab))) S.tab="summary";
