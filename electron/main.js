@@ -1,16 +1,14 @@
 const { app, BrowserWindow, Menu, shell, dialog } = require("electron");
 const path = require("path");
-const { pathToFileURL } = require("url");
 
 // The app is fully standalone now: its own HTML/JS bundled below, syncing
 // over the internet directly with Firebase (no claude.ai account needed).
-// The install path contains Arabic characters (the product name), and
-// win.loadFile() has a known history of mis-encoding non-ASCII Windows
-// paths (silent blank window, no error). pathToFileURL() encodes the
-// path correctly on every platform, so we build the URL ourselves and
-// use loadURL() instead of relying on loadFile()'s own path handling.
+// NOTE: asar packaging is turned off (see package.json "build.asar": false)
+// so these files sit as plain, unpacked files under resources/app/ instead
+// of inside an app.asar archive — this avoids a class of Electron bugs
+// where loading packaged HTML through the asar virtual filesystem fails
+// with a generic ERR_FAILED / blank window on some Windows setups.
 const APP_FILE = path.join(__dirname, "app", "index.html");
-const APP_URL = pathToFileURL(APP_FILE).toString();
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -27,7 +25,7 @@ function createWindow() {
     }
   });
 
-  win.loadURL(APP_URL);
+  win.loadFile(APP_FILE);
 
   // If the page fails to load for any reason, show what happened instead
   // of leaving a silent blank window.

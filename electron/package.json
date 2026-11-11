@@ -15,6 +15,7 @@
     "appId": "com.mukallaf.app",
     "productName": "مُكَلَّف",
     "icon": "build/icon.ico",
+    "asar": false,
     "files": [
       "main.js",
       "app/**/*",
