@@ -1,7 +1,9 @@
 const { app, BrowserWindow, Menu, shell } = require("electron");
 const path = require("path");
 
-const APP_URL = "https://claude.ai/artifact/Ry83nfL2xAGtpioCEZt4kp";
+// The app is fully standalone now: its own HTML/JS bundled below, syncing
+// over the internet directly with Firebase (no claude.ai account needed).
+const APP_FILE = path.join(__dirname, "app", "index.html");
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -18,7 +20,7 @@ function createWindow() {
     }
   });
 
-  win.loadURL(APP_URL);
+  win.loadFile(APP_FILE);
 
   // Open any target="_blank" link (e.g. opened documents) in the user's
   // default browser instead of a new Electron window.

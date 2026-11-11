@@ -229,66 +229,107 @@ const TYPE_INFO = {
 /* ================= state ================= */
 const S = { tasks:[], entries:[], stages:[], parties:[], docs:[], staff:[], agreements:[], cfg:null,
   view:"home", taskId:null, partyId:null, tab:"summary", filter:"all", pfilter:"all", dateFrom:"", dateTo:"",
-  mode:"loading", isOwner:true, canWrite:true, myId:null, names:{}, ok:{}, receipts:{}, files:{}, canInstall:false, installed:false };
-let db=null, user=null, assets=null, downloads=null;
+  mode:"local", isOwner:true, canWrite:true, myId:null, names:{}, receipts:{}, files:{}, canInstall:false, installed:false,
+  syncCode:null, lastSync:0, syncErr:false };
 const cfg = () => { const c=S.cfg||{}; return { cats:{...DEFAULT_CFG.cats,...(c.cats||{})}, stages:{...DEFAULT_CFG.stages,...(c.stages||{})}, docCats:c.docCats||DEFAULT_CFG.docCats, units:c.units||DEFAULT_CFG.units, jobTypes:c.jobTypes||DEFAULT_CFG.jobTypes }; };
 
-/* ================= storage ================= */
+/* ================= storage (local, always the source of truth) ================= */
 const LS_KEY="mukallaf-local-v2";
 const COLS=["tasks","entries","stages","parties","docs","staff","agreements"];
 function loadLocal(){ try{const d=JSON.parse(localStorage.getItem(LS_KEY)||"{}"); COLS.forEach(c=>S[c]=d[c]||[]); S.cfg=d.cfg||null; S.receipts=d.receipts||{}; S.files=d.files||{};}catch(e){} }
 function saveLocal(){ try{const d={cfg:S.cfg,receipts:S.receipts,files:S.files}; COLS.forEach(c=>d[c]=S[c]); localStorage.setItem(LS_KEY,JSON.stringify(d));}catch(e){toast("تعذّر الحفظ: مساحة المتصفح ممتلئة");} }
 
 async function put(col,id,data){
-  if(S.mode==="db"){ try{ await db.collection(col).doc(id).set(data); }catch(e){ writeErr(e); throw e; } }
-  else{ const arr=S[col]; const i=arr.findIndex(x=>x.id===id); const row={...data,id}; if(i>=0) arr[i]=row; else arr.push(row); saveLocal(); render(); }
+  const row={...data,id,_t:Date.now()};
+  const arr=S[col]; const i=arr.findIndex(x=>x.id===id); if(i>=0) arr[i]=row; else arr.push(row);
+  saveLocal(); render();
+  if(S.mode==="sync") fbPut(`${col}/${id}`,row);
 }
 async function del(col,id){
-  if(S.mode==="db"){ try{ await db.collection(col).doc(id).delete(); }catch(e){ writeErr(e); throw e; } }
-  else{ S[col]=S[col].filter(x=>x.id!==id); saveLocal(); render(); }
+  S[col]=S[col].filter(x=>x.id!==id);
+  saveLocal(); render();
+  if(S.mode==="sync") fbPut(`${col}/${id}`,{_deleted:true,_t:Date.now()});
 }
 async function saveCfg(c){
-  if(S.mode==="db"){ try{ await db.doc("config/main").set(c); }catch(e){ writeErr(e); throw e; } }
-  else { S.cfg=c; saveLocal(); render(); }
+  const row={...c,_t:Date.now()};
+  S.cfg=row; saveLocal(); render();
+  if(S.mode==="sync") fbPut("config",row);
 }
-async function putReceipt(id,img){ if(S.mode==="db") await db.collection("receipts").doc(id).set({img}); else { S.receipts[id]=img; saveLocal(); } }
-async function getReceipt(id){ if(S.mode==="db"){ const s=await db.collection("receipts").doc(id).get(); return s.exists? s.data().img : null; } return S.receipts[id]||null; }
-async function delReceipt(id){ if(S.mode==="db"){ try{await db.collection("receipts").doc(id).delete();}catch(e){} } else { delete S.receipts[id]; saveLocal(); } }
-function writeErr(e){
-  const c=e&&e.code;
-  if(c==="invalid_argument"){ toast("ليست لديك صلاحية لهذا التعديل"); }
-  else if(c==="quota_exceeded") toast("امتلأت مساحة التخزين، احذف بعض الصور القديمة");
-  else toast("تعذّر الحفظ، حاول مجدداً");
+async function putReceipt(id,img){ S.receipts[id]=img; saveLocal(); }
+async function getReceipt(id){ return S.receipts[id]||null; }
+async function delReceipt(id){ delete S.receipts[id]; saveLocal(); }
+const fileUrl = d => S.files[d.id]||"";
+
+/* ================= Firebase sync (pairing code links two devices) ================= */
+const FB_BASE="https://mukallaf-sync-default-rtdb.europe-west1.firebasedatabase.app";
+const SYNC_KEY="mukallaf-sync-cfg-v1";
+const ID_KEY="mukallaf-my-id";
+const PAIR_ALPHABET="abcdefghjkmnpqrstuvwxyz23456789";
+const PAIR_LEN=10;
+function newPairCode(){ const a=new Uint32Array(PAIR_LEN); crypto.getRandomValues(a); let s=""; for(let i=0;i<PAIR_LEN;i++) s+=PAIR_ALPHABET[a[i]%PAIR_ALPHABET.length]; return s; }
+const fmtCode = c => c&&c.length===PAIR_LEN ? c.slice(0,5)+"-"+c.slice(5) : (c||"");
+const normCode = s => (s||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+function fbUrl(path){ return `${FB_BASE}/mukallaf/${S.syncCode}${path?("/"+path):""}.json`; }
+async function fbPut(path,body){ try{ const r=await fetch(fbUrl(path),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); S.syncErr=!r.ok; return r.ok; }catch(e){ S.syncErr=true; return false; } }
+async function fbGet(path){ try{ const r=await fetch(fbUrl(path)); if(!r.ok){ S.syncErr=true; return undefined; } S.syncErr=false; return await r.json(); }catch(e){ S.syncErr=true; return undefined; } }
+
+function loadSyncCfg(){ try{ const d=JSON.parse(localStorage.getItem(SYNC_KEY)||"null"); if(d&&d.code){ S.syncCode=d.code; S.isOwner=!!d.isOwner; S.mode="sync"; } }catch(e){} }
+function saveSyncCfg(){ try{ localStorage.setItem(SYNC_KEY,JSON.stringify({code:S.syncCode,isOwner:S.isOwner})); }catch(e){} }
+function clearSyncCfg(){ try{ localStorage.removeItem(SYNC_KEY); }catch(e){} S.syncCode=null; S.mode="local"; stopSyncLoop(); }
+
+async function pushAllLocal(){
+  const node={};
+  COLS.forEach(col=>{ node[col]={}; S[col].forEach(r=>{ node[col][r.id]={...r,_t:r._t||Date.now()}; }); });
+  if(S.cfg) node.config={...S.cfg,_t:S.cfg._t||Date.now()};
+  await fbPut("",node);
 }
-const rows = snap => snap.docs.map(d=>({...d.data(), id:d.id}));
-const fileUrl = d => d.assetId ? "/_blob/"+d.assetId : (S.files[d.id]||"");
+async function pullAndMerge(){
+  if(S.mode!=="sync"||!S.syncCode) return;
+  const remote=await fbGet("");
+  render();
+  if(!remote) return;
+  let changed=false;
+  COLS.forEach(col=>{
+    const remoteCol=remote[col]||{};
+    Object.keys(remoteCol).forEach(id=>{
+      const rrec=remoteCol[id]; if(!rrec) return;
+      const idx=S[col].findIndex(x=>x.id===id); const lrec=idx>=0?S[col][idx]:null;
+      if(rrec._deleted){ if(lrec){ S[col].splice(idx,1); changed=true; } return; }
+      if(!lrec || (rrec._t||0)>(lrec._t||0)){ const row={...rrec,id}; if(idx>=0) S[col][idx]=row; else S[col].push(row); changed=true; }
+    });
+  });
+  if(remote.config){ const rc=remote.config, lc=S.cfg||{}; if((rc._t||0)>(lc._t||0)){ S.cfg=rc; changed=true; } }
+  if(changed){ saveLocal(); S.lastSync=Date.now(); render(); }
+  else S.lastSync=Date.now();
+}
+let syncTimer=null;
+function startSyncLoop(){ stopSyncLoop(); pullAndMerge(); syncTimer=setInterval(pullAndMerge,90000); }
+function stopSyncLoop(){ if(syncTimer){ clearInterval(syncTimer); syncTimer=null; } }
+
+async function becomeOwner(){
+  S.syncCode=newPairCode(); S.isOwner=true; S.mode="sync"; saveSyncCfg();
+  await pushAllLocal(); startSyncLoop(); render();
+}
+async function joinWithCode(input){
+  const code=normCode(input);
+  if(code.length!==PAIR_LEN){ toast(`الرمز يتكوّن من ${PAIR_LEN} خانات`); return false; }
+  S.syncCode=code;
+  const remote=await fbGet("");
+  if(remote===undefined){ S.syncCode=null; toast("تعذّر الاتصال، تحقق من الإنترنت"); return false; }
+  S.isOwner=false; S.mode="sync"; saveSyncCfg();
+  startSyncLoop(); render(); toast("تم الربط بنجاح"); return true;
+}
+function unlinkSync(){ clearSyncCfg(); render(); toast("أُلغي الربط، البيانات بقيت محفوظة على هذا الجهاز"); }
 
 async function boot(){
-  try{ [db,user,assets] = await Promise.all(["db","user","assets"].map(n=>window.claude?.use?.(n))); }catch(e){ db=null; }
-  try{ downloads = await window.claude?.use?.("downloads"); }catch(e){ downloads=null; }
-  if(user){
-    try{ S.isOwner = !!user.isOwner(); }catch(e){}
-    try{ const c=user.can && user.can("data.write"); S.canWrite = (c===null||c===undefined) ? true : !!c; }catch(e){}
-    try{ S.myId = await user.id(); }catch(e){}
-  }
-  if(!db){ S.mode="local"; S.isOwner=true; S.canWrite=true; loadLocal(); render(); return; }
-  S.mode="db"; render();
-  const timer=setTimeout(()=>{ if(Object.keys(S.ok).length<COLS.length){ S.slow=true; render(); } },10000);
-  const sub=(col,order)=>{
-    let q=db.collection(col); if(order) q=q.orderBy(order,"asc");
-    q.onSnapshot(snap=>{ S[col]=rows(snap); if(!snap.metadata.fromCache){ S.ok[col]=1; if(Object.keys(S.ok).length>=COLS.length){clearTimeout(timer);S.slow=false;} } resolveNames(); render(); },
-      ()=>{ S.dbErr=true; clearTimeout(timer); render(); });
-  };
-  sub("tasks","createdAt"); sub("entries","date"); sub("stages","order"); sub("parties","name"); sub("docs","createdAt"); sub("staff","createdAt"); sub("agreements","createdAt");
-  db.doc("config/main").onSnapshot(s=>{ S.cfg = s.exists ? s.data() : null; render(); }, ()=>{});
+  loadLocal();
+  try{ let id=localStorage.getItem(ID_KEY); if(!id){ id=uid(); localStorage.setItem(ID_KEY,id); } S.myId=id; }catch(e){ S.myId=uid(); }
+  loadSyncCfg();
+  S.canWrite=true;
+  render();
+  if(S.mode==="sync") startSyncLoop();
 }
-async function resolveNames(){
-  if(!user||!user.profiles) return;
-  const ids=[...new Set([...S.entries,...S.docs].map(e=>e.by).filter(Boolean))].filter(id=>!(id in S.names));
-  if(!ids.length) return;
-  try{ const ps=await user.profiles(ids); ids.forEach(id=>{ S.names[id]=(ps&&ps[id]&&ps[id].name)||""; }); render(); }catch(e){}
-}
-const who = id => !id ? "" : (id===S.myId ? "أنت" : (S.names[id]||"مشارك"));
+const who = id => !id ? "" : (id===S.myId ? "أنت" : "الطرف الآخر");
 const party = id => S.parties.find(p=>p.id===id);
 const partyName = id => (party(id)||{}).name || "";
 function agentsText(t){ const n=(t.agentIds||[]).map(partyName).filter(Boolean); return n.length? n.join(" و ") : (t.agents||"—"); }
@@ -330,18 +371,15 @@ function calc(t){
 
 /* ================= render ================= */
 function render(){
-  $("#role").textContent = S.mode==="local" ? "وضع محلي" : S.mode==="loading" ? "…" : (S.isOwner ? "أنت: صاحب المال" : (S.canWrite? "أنت: مُكلَّف" : "أنت: مُطّلِع"));
+  $("#role").textContent = S.mode==="local" ? "وضع محلي (غير مربوط)" : (S.isOwner ? "أنت: صاحب المال" : "أنت: المُكلَّف");
   const top = (S.view==="task")?"home":(S.view==="party")?"parties":S.view;
   $("#nav").innerHTML=[["home","التكليفات"],["parties","الأطراف"],["settings","الفئات والإعدادات"]].map(([k,l])=>`<button data-nav="${k}" class="${top===k?"on":""}">${l}</button>`).join("");
   $("#nav").querySelectorAll("[data-nav]").forEach(b=>b.onclick=()=>{S.view=b.dataset.nav;render();scrollTo(0,0);});
   const fab=$("#fab"), app=$("#app");
-  if(S.mode==="loading"){ fab.style.display="none"; return; }
   let h="";
   if(S.canInstall && !S.installed) h+=`<div class="banner" style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap"><span>📲 يمكنك تثبيت هذا التطبيق على هاتفك أو حاسوبك ليعمل كتطبيق مستقل بأيقونة خاصة.</span><button class="btn gold sm" data-act="installApp">تثبيت الآن</button></div>`;
-  if(S.mode==="local") h+=`<div class="banner">البيانات محفوظة على هذا الجهاز فقط. افتح التطبيق من رابطه في Claude لتتزامن البيانات بين صاحب المال والمُكلَّف.</div>`;
-  if(S.slow) h+=`<div class="banner">تعذّر الوصول إلى البيانات حتى الآن، قد تكون غير محدّثة.</div>`;
-  if(S.dbErr) h+=`<div class="banner err">انقطع الاتصال بقاعدة البيانات. أعد فتح الصفحة.</div>`;
-  if(!S.canWrite && S.mode==="db") h+=`<div class="banner">يمكنك الاطلاع فقط. اطلب من صاحب المال منحك صلاحية التعديل.</div>`;
+  if(S.mode==="local") h+=`<div class="banner">البيانات محفوظة على هذا الجهاز فقط ولا تتزامن مع أي جهاز آخر. اذهب إلى «الفئات والإعدادات» لربط هذا الجهاز بجهاز آخر.</div>`;
+  if(S.mode==="sync" && S.syncErr) h+=`<div class="banner err">تعذّر الاتصال بالإنترنت لمزامنة البيانات. ستُحفظ تعديلاتك محلياً وتُرسَل عند عودة الاتصال.</div>`;
   const t = S.view==="task" ? S.tasks.find(x=>x.id===S.taskId) : null;
   if(S.view==="task" && !t) S.view="home";
   if(t && !((TYPE_TABS[t.type]||TYPE_TABS.build).some(([k])=>k===S.tab))) S.tab="summary";
@@ -443,25 +481,31 @@ function partyView(p){
 
 /* ---------- settings ---------- */
 function linkingCard(){
-  const hosted = S.mode==="db";
-  let h=`<div class="card" style="margin-bottom:14px"><h3>الربط بين صاحب المال والمُكلَّف ومنح الصلاحية</h3>`;
-  if(S.isOwner){
-    h+=`<p class="note">هذا التطبيق يتزامن تلقائياً بين كل من يفتح نفس الرابط، لكن منح الوصول له لا يتم من داخل الصفحة بل عبر زر «المشاركة / Share» في أعلى نافذة Claude (خارج هذا التطبيق). الخطوات:</p>
-   <div class="row" style="padding:6px 0"><span>١</span><span>افتح زر المشاركة الخاص بهذا التطبيق في Claude (ليس زراً داخل الصفحة).</span></div>
-   <div class="row" style="padding:6px 0"><span>٢</span><span>أضف الشخص (بالبريد الإلكتروني أو اسم المستخدم).</span></div>
-   <div class="row" style="padding:6px 0"><span>٣</span><span><b>صلاحية كاملة (محرِّر / Editor):</b> يسجّل حركات ومراحل ووثائق — هذا هو المناسب للمُكلَّف.</span></div>
-   <div class="row" style="padding:6px 0;border-bottom:0"><span>٤</span><span><b>صلاحية جزئية (اطّلاع فقط / Viewer):</b> يرى البيانات دون تعديل.</span></div>
-   ${hosted?`<div class="acts" style="margin-top:10px"><button class="btn ghost sm" data-act="copyLink">📋 نسخ رابط التطبيق</button></div>`:`<p class="note">أنت الآن في الوضع المحلي (غير منشور)، فلا يوجد رابط للمشاركة بعد.</p>`}`;
+  let h=`<div class="card" style="margin-bottom:14px"><h3>الربط بين صاحب المال والمُكلَّف</h3>`;
+  if(S.mode==="sync"){
+    h+=`<p class="note">هذا الجهاز مربوط حالياً بصفته <b>${S.isOwner?"صاحب المال":"المُكلَّف"}</b>. تُرسَل تعديلاتك فوراً وتُسحَب تعديلات الطرف الآخر تلقائياً كل دقيقة أو دقيقتين (${S.lastSync?("آخر مزامنة: "+new Date(S.lastSync).toLocaleTimeString("ar")):"جارٍ الاتصال..."}).</p>
+     <div class="row" style="padding:6px 0;border-bottom:0"><span>رمز الإقران</span><b style="direction:ltr">${esc(fmtCode(S.syncCode))}</b></div>
+     <div class="acts" style="margin-top:10px">
+       <button class="btn ghost sm" data-act="shareCode">📤 مشاركة الرمز</button>
+       <button class="btn ghost sm" data-act="syncNow">🔄 مزامنة الآن</button>
+       <button class="btn danger sm" data-act="unlinkSync">إلغاء الربط</button>
+     </div>`;
   } else {
-    h+=`<p class="note">صاحب المال هو من يمنحك صلاحية الوصول عبر زر المشاركة في Claude. شارتك الحالية أعلى الصفحة (${S.canWrite?"مُكلَّف — صلاحية كاملة":"مُطّلِع — اطّلاع فقط"}) تُظهر صلاحيتك. إن احتجت صلاحية إضافية (تسجيل الحركات مثلاً) اطلب من صاحب المال رفعها إلى «محرِّر».</p>`;
+    h+=`<p class="note">لم يُربط هذا الجهاز بعد. اختر أحد الخيارين:</p>
+     <div class="two" style="margin-top:10px">
+       <div class="card" style="box-shadow:none;border:1px solid var(--line)">
+         <h3 style="font-size:15px">أنا صاحب المال</h3>
+         <p class="note">ينشئ رمز إقران جديداً وترسله للمُكلَّف.</p>
+         <button class="btn gold sm" data-act="becomeOwner">إنشاء رمز إقران</button>
+       </div>
+       <div class="card" style="box-shadow:none;border:1px solid var(--line)">
+         <h3 style="font-size:15px">أنا المُكلَّف</h3>
+         <p class="note">أدخل الرمز الذي أرسله لك صاحب المال.</p>
+         <button class="btn ghost sm" data-act="joinCode">إدخال رمز الإقران</button>
+       </div>
+     </div>`;
   }
-  h+=`</div>
-  <div class="card" style="margin-bottom:14px"><h3>تثبيت التطبيق على الهاتف أو الحاسوب</h3>
-   <p class="note">هذه الصفحة قابلة للتثبيت كتطبيق حقيقي بأيقونة خاصة:</p>
-   <div class="row" style="padding:6px 0"><span>أندرويد</span><span>افتح الرابط في Chrome، ثم قائمة ⋮ ← «تثبيت التطبيق» (أو اضغط زر «تثبيت الآن» أعلى الصفحة إن ظهر).</span></div>
-   <div class="row" style="padding:6px 0;border-bottom:0"><span>ويندوز</span><span>افتح الرابط في Chrome أو Edge، ثم أيقونة التثبيت ⊕ في شريط العنوان ← «تثبيت».</span></div>
-   <p class="note" style="margin-top:8px">هذا يثبّت التطبيق فعلياً (أيقونة مستقلة، بدون شريط المتصفح) لكنه ليس ملف APK أو exe منفصلاً يمكن إرساله لشخص آخر. لإنتاج ملف APK حقيقي قابل للتوزيع، استخدم خدمة مجانية خارجية تُدعى <b>PWABuilder.com</b>: الصق فيها رابط هذا التطبيق، وستولّد لك ملف APK (أندرويد) أو حزمة تثبيت ويندوز جاهزة للتنزيل. هذه الخطوة الأخيرة تحتاج تنفيذها أنت على pwabuilder.com لأنها تتطلب أدوات بناء وتوقيع غير متوفرة في هذه الجلسة.</p>
-  </div>`;
+  h+=`</div>`;
   return h;
 }
 function settingsView(){
@@ -730,16 +774,19 @@ async function exportCSV(t,c,list){
   });
   const csv="﻿"+lines.join("\n");
   const filename=`${t.title.replace(/[\\/:*?"<>|]/g,"-")}-حركات.csv`;
-  if(downloads && downloads.save){
-    try{ await downloads.save({filename,data:csv}); toast("تم تصدير الملف"); return; }
-    catch(e){ if(e&&e.code==="declined"){ toast("أُلغي التصدير"); return; } }
-  }
+  try{
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),2000);
+    toast("تم تصدير الملف"); return;
+  }catch(e){}
   showText(csv);
 }
 
 /* ---------- documents ---------- */
 function docsGrid(list,target){
-  const canUp = S.mode==="local" || !!assets;
+  const canUp = true;
   let h="";
   if(!list.length) h+=`<div class="card empty"><div class="big">📁</div>لا وثائق بعد.</div>`;
   else h+=`<div class="grid docs">`+list.slice().reverse().map(d=>{
@@ -795,8 +842,25 @@ function bindView(t,p){
     if(a==="newStaff") staffForm(t);
     if(a==="newAgreement") agreementForm(t);
     if(a==="clearDates"){ S.dateFrom=""; S.dateTo=""; render(); }
-    if(a==="copyLink"){ navigator.clipboard.writeText(location.href).then(()=>toast("نُسخ الرابط"),()=>toast("تعذّر النسخ، انسخ الرابط من شريط العنوان")); }
     if(a==="installApp"){ if(deferredPrompt){ deferredPrompt.prompt(); const choice=await deferredPrompt.userChoice; if(choice.outcome==="accepted") toast("جارٍ التثبيت…"); deferredPrompt=null; S.canInstall=false; render(); } }
+    if(a==="becomeOwner"){ el.disabled=true; await becomeOwner(); toast("أُنشئ رمز الإقران"); }
+    if(a==="joinCode"){
+      modal(`<h3>إدخال رمز الإقران</h3><form id="f">
+       <label class="f">الرمز الذي أرسله لك صاحب المال<input name="code" maxlength="12" required placeholder="xxxxx-xxxxx" style="direction:ltr;text-align:center;font-size:18px"></label>
+       <p class="note" id="st"></p>
+       <div class="acts"><button class="btn gold" type="submit" id="sv">ربط</button><button class="btn ghost" type="button" id="cx">إلغاء</button></div></form>`,(m,close)=>{
+        const f=m.querySelector("#f"); m.querySelector("#cx").onclick=close;
+        f.onsubmit=async ev=>{ ev.preventDefault(); const btn=m.querySelector("#sv"); btn.disabled=true; m.querySelector("#st").textContent="جارٍ الاتصال…";
+          const ok=await joinWithCode(f.code.value); if(ok) close(); else { btn.disabled=false; m.querySelector("#st").textContent=""; } };
+      });
+    }
+    if(a==="shareCode"){
+      const text=`رمز الإقران بتطبيق مُكَلَّف: ${fmtCode(S.syncCode)}\nافتح تطبيق مُكَلَّف ← الفئات والإعدادات ← «أنا المُكلَّف» ← أدخل الرمز.`;
+      if(navigator.share){ navigator.share({text}).catch(()=>{}); }
+      else navigator.clipboard.writeText(text).then(()=>toast("نُسخ الرمز، الصقه في واتساب"),()=>toast(text));
+    }
+    if(a==="syncNow"){ el.disabled=true; await pullAndMerge(); await pushAllLocal(); el.disabled=false; toast("تمت المزامنة"); }
+    if(a==="unlinkSync"){ confirmBox("إلغاء الربط مع الجهاز الآخر؟ ستبقى بياناتك محفوظة على هذا الجهاز.",unlinkSync,"نعم، ألغِ"); }
     if(a==="tplStages"){ const st=S.stages.filter(s=>s.taskId===t.id); const tpl=(cfg().stages[t.type]||[]).filter(n=>!st.some(s=>s.name===n)); el.disabled=true;
       try{ let i=0; for(const n of tpl){ await put("stages",uid(),{taskId:t.id,name:n,weight:1,percent:0,order:Date.now()+i++}); } toast("أُضيفت مراحل القالب"); }catch(e){} }
     if(a==="saveCfg"){ try{ await saveCfg(readLists()); toast("حُفظت الفئات"); }catch(e){} }
@@ -1122,9 +1186,10 @@ const ACCEPT="image/png,image/jpeg,image/webp,image/gif,application/pdf";
 function docForm(target){
   const c=cfg();
   modal(`<h3>رفع وثيقة</h3><form id="f">
-   <label class="f">الملف (صورة أو PDF، حتى ${S.mode==="local"?"1":"20"} ميغابايت)<input name="file" type="file" accept="${ACCEPT}" required></label>
+   <label class="f">الملف (صورة أو PDF، حتى 1 ميغابايت)<input name="file" type="file" accept="${ACCEPT}" required></label>
    <label class="f">عنوان الوثيقة<input name="title" maxlength="80" required></label>
    <label class="f">نوع الوثيقة<select name="cat">${c.docCats.map(x=>`<option>${esc(x)}</option>`).join("")}</select></label>
+   <p class="note">هذا الملف يبقى محفوظاً على هذا الجهاز فقط ولا يُزامَن حالياً مع الجهاز الآخر.</p>
    <p class="note" id="st"></p>
    <div class="acts"><button class="btn gold" type="submit" id="sv">رفع</button><button class="btn ghost" type="button" id="cx">إلغاء</button></div></form>`,(m,close)=>{
     const f=m.querySelector("#f"); m.querySelector("#cx").onclick=close;
@@ -1132,26 +1197,19 @@ function docForm(target){
     f.onsubmit=async ev=>{ ev.preventDefault(); const fl=f.file.files[0]; if(!fl) return;
       const mime=fl.type || (/\.pdf$/i.test(fl.name)?"application/pdf":"");
       if(!ACCEPT.split(",").includes(mime)){ toast("نوع الملف غير مدعوم: صور أو PDF فقط"); return; }
+      if(fl.size>1024*1024){ toast("الحد الأقصى 1 ميغابايت"); return; }
       const btn=m.querySelector("#sv"); btn.disabled=true; m.querySelector("#st").textContent="جارٍ الرفع…";
       const id=uid(); const data={...target, title:f.title.value.trim(), cat:f.cat.value, mime, name:fl.name, size:fl.size, by:S.myId||null, createdAt:new Date().toISOString()};
       try{
-        if(S.mode==="db"){
-          if(!assets){ toast("رفع الوثائق يتطلب صلاحية محرِّر"); btn.disabled=false; return; }
-          const r=await assets.upload(fl,{type:mime}); data.assetId=r.id;
-        } else {
-          if(fl.size>1024*1024){ toast("في الوضع المحلي الحد الأقصى 1 ميغابايت"); btn.disabled=false; m.querySelector("#st").textContent=""; return; }
-          S.files[id]=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(fl);});
-        }
+        S.files[id]=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(fl);});
         await put("docs",id,data); close(); toast("رُفعت الوثيقة");
       }catch(e){
-        const code=e&&e.code; btn.disabled=false; m.querySelector("#st").textContent="";
-        toast(code==="too_large"?"الملف أكبر من 20 ميغابايت":code==="quota_or_state"?"امتلأت مساحة الوثائق":code==="unsupported_type"?"نوع الملف غير مدعوم":"تعذّر رفع الملف");
+        btn.disabled=false; m.querySelector("#st").textContent=""; toast("تعذّر رفع الملف");
       }
     };
   });
 }
 async function deleteDoc(d,silent){
-  try{ if(d.assetId&&assets) await assets.delete(d.assetId); }catch(e){ if(!silent) toast("تعذّر حذف الملف من التخزين"); }
   if(S.files[d.id]){ delete S.files[d.id]; }
   await del("docs",d.id);
 }

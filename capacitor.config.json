@@ -3,11 +3,9 @@
   "appName": "مُكَلَّف",
   "webDir": "www",
   "server": {
-    "url": "https://claude.ai/artifact/Ry83nfL2xAGtpioCEZt4kp",
-    "androidScheme": "https",
-    "cleartext": false
+    "androidScheme": "https"
   },
   "android": {
-    "allowMixedContent": true
+    "allowMixedContent": false
   }
 }
