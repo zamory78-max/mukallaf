@@ -62,3 +62,15 @@ jobs:
           git add -- *.exe
           git commit -m "Windows build from ${GITHUB_SHA}"
           git push -f origin exe-latest
+
+      - name: نشر نسخة في مستودع التحميلات العام (apps-downloads)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.DOWNLOADS_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::warning::DOWNLOADS_TOKEN غير مضبوط، تم تخطي النشر في apps-downloads"; exit 0; fi
+          mkdir -p /tmp/win-up
+          for f in /tmp/win-dist/*.exe; do case "$f" in *Setup*) cp "$f" /tmp/win-up/mukallaf-setup.exe;; *) cp "$f" /tmp/win-up/mukallaf-portable.exe;; esac; done
+          gh release view mukallaf -R zamory78-max/apps-downloads >/dev/null 2>&1 || \
+            gh release create mukallaf -R zamory78-max/apps-downloads --title "مُكَلَّف" --notes "آخر نسخة من مُكَلَّف"
+          gh release upload mukallaf /tmp/win-up/*.exe -R zamory78-max/apps-downloads --clobber
