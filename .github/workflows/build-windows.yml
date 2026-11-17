@@ -64,6 +64,7 @@ jobs:
           git push -f origin exe-latest
 
       - name: نشر نسخة في مستودع التحميلات العام (apps-downloads)
+        shell: bash
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.DOWNLOADS_TOKEN }}
