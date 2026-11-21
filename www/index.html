@@ -229,7 +229,7 @@ const TYPE_INFO = {
 /* ================= state ================= */
 const S = { tasks:[], entries:[], stages:[], parties:[], docs:[], staff:[], agreements:[], cfg:null,
   view:"home", taskId:null, partyId:null, tab:"summary", filter:"all", pfilter:"all", dateFrom:"", dateTo:"",
-  mode:"local", isOwner:true, canWrite:true, myId:null, names:{}, receipts:{}, files:{}, canInstall:false, installed:false,
+  mode:"local", isOwner:true, role:null, canWrite:true, myId:null, names:{}, receipts:{}, files:{}, canInstall:false, installed:false,
   syncCode:null, lastSync:0, syncErr:false };
 const cfg = () => { const c=S.cfg||{}; return { cats:{...DEFAULT_CFG.cats,...(c.cats||{})}, stages:{...DEFAULT_CFG.stages,...(c.stages||{})}, docCats:c.docCats||DEFAULT_CFG.docCats, units:c.units||DEFAULT_CFG.units, jobTypes:c.jobTypes||DEFAULT_CFG.jobTypes }; };
 
@@ -240,17 +240,20 @@ function loadLocal(){ try{const d=JSON.parse(localStorage.getItem(LS_KEY)||"{}")
 function saveLocal(){ try{const d={cfg:S.cfg,receipts:S.receipts,files:S.files}; COLS.forEach(c=>d[c]=S[c]); localStorage.setItem(LS_KEY,JSON.stringify(d));}catch(e){toast("تعذّر الحفظ: مساحة المتصفح ممتلئة");} }
 
 async function put(col,id,data){
+  if(!S.canWrite) return;
   const row={...data,id,_t:Date.now()};
   const arr=S[col]; const i=arr.findIndex(x=>x.id===id); if(i>=0) arr[i]=row; else arr.push(row);
   saveLocal(); render();
   if(S.mode==="sync") fbPut(`${col}/${id}`,row);
 }
 async function del(col,id){
+  if(!S.canWrite) return;
   S[col]=S[col].filter(x=>x.id!==id);
   saveLocal(); render();
   if(S.mode==="sync") fbPut(`${col}/${id}`,{_deleted:true,_t:Date.now()});
 }
 async function saveCfg(c){
+  if(!S.canWrite) return;
   const row={...c,_t:Date.now()};
   S.cfg=row; saveLocal(); render();
   if(S.mode==="sync") fbPut("config",row);
@@ -273,9 +276,9 @@ function fbUrl(path){ return `${FB_BASE}/mukallaf/${S.syncCode}${path?("/"+path)
 async function fbPut(path,body){ try{ const r=await fetch(fbUrl(path),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); S.syncErr=!r.ok; return r.ok; }catch(e){ S.syncErr=true; return false; } }
 async function fbGet(path){ try{ const r=await fetch(fbUrl(path)); if(!r.ok){ S.syncErr=true; return undefined; } S.syncErr=false; return await r.json(); }catch(e){ S.syncErr=true; return undefined; } }
 
-function loadSyncCfg(){ try{ const d=JSON.parse(localStorage.getItem(SYNC_KEY)||"null"); if(d&&d.code){ S.syncCode=d.code; S.isOwner=!!d.isOwner; S.mode="sync"; } }catch(e){} }
-function saveSyncCfg(){ try{ localStorage.setItem(SYNC_KEY,JSON.stringify({code:S.syncCode,isOwner:S.isOwner})); }catch(e){} }
-function clearSyncCfg(){ try{ localStorage.removeItem(SYNC_KEY); }catch(e){} S.syncCode=null; S.mode="local"; stopSyncLoop(); }
+function loadSyncCfg(){ try{ const d=JSON.parse(localStorage.getItem(SYNC_KEY)||"null"); if(d&&d.code){ S.syncCode=d.code; S.isOwner=!!d.isOwner; S.role=d.role||(S.isOwner?"owner":"agent"); S.canWrite=(S.role!=="witness"); S.mode="sync"; } }catch(e){} }
+function saveSyncCfg(){ try{ localStorage.setItem(SYNC_KEY,JSON.stringify({code:S.syncCode,isOwner:S.isOwner,role:S.role})); }catch(e){} }
+function clearSyncCfg(){ try{ localStorage.removeItem(SYNC_KEY); }catch(e){} S.syncCode=null; S.mode="local"; S.role=null; S.isOwner=true; S.canWrite=true; stopSyncLoop(); }
 
 async function pushAllLocal(){
   const node={};
@@ -307,16 +310,17 @@ function startSyncLoop(){ stopSyncLoop(); pullAndMerge(); syncTimer=setInterval(
 function stopSyncLoop(){ if(syncTimer){ clearInterval(syncTimer); syncTimer=null; } }
 
 async function becomeOwner(){
-  S.syncCode=newPairCode(); S.isOwner=true; S.mode="sync"; saveSyncCfg();
+  S.syncCode=newPairCode(); S.isOwner=true; S.role="owner"; S.canWrite=true; S.mode="sync"; saveSyncCfg();
   await pushAllLocal(); startSyncLoop(); render();
 }
-async function joinWithCode(input){
+async function joinWithCode(input,role){
+  role = role==="witness" ? "witness" : "agent";
   const code=normCode(input);
   if(code.length!==PAIR_LEN){ toast(`الرمز يتكوّن من ${PAIR_LEN} خانات`); return false; }
   S.syncCode=code;
   const remote=await fbGet("");
   if(remote===undefined){ S.syncCode=null; toast("تعذّر الاتصال، تحقق من الإنترنت"); return false; }
-  S.isOwner=false; S.mode="sync"; saveSyncCfg();
+  S.isOwner=false; S.role=role; S.canWrite=(role!=="witness"); S.mode="sync"; saveSyncCfg();
   startSyncLoop(); render(); toast("تم الربط بنجاح"); return true;
 }
 function unlinkSync(){ clearSyncCfg(); render(); toast("أُلغي الربط، البيانات بقيت محفوظة على هذا الجهاز"); }
@@ -369,7 +373,7 @@ async function boot(){
   loadLocal();
   try{ let id=localStorage.getItem(ID_KEY); if(!id){ id=uid(); localStorage.setItem(ID_KEY,id); } S.myId=id; }catch(e){ S.myId=uid(); }
   loadSyncCfg();
-  S.canWrite=true;
+  if(S.mode!=="sync") S.canWrite=true;
   render();
   if(S.mode==="sync") startSyncLoop();
 }
@@ -416,7 +420,7 @@ function calc(t){
 /* ================= render ================= */
 function render(){
   if(trialLocked()){ renderLock(); return; }
-  $("#role").textContent = S.mode==="local" ? "وضع محلي (غير مربوط)" : (S.isOwner ? "أنت: صاحب المال" : "أنت: المُكلَّف");
+  $("#role").textContent = S.mode==="local" ? "وضع محلي (غير مربوط)" : (S.role==="owner" ? "أنت: صاحب المال" : S.role==="witness" ? "أنت: شاهد (اطّلاع فقط)" : "أنت: المُكلَّف");
   const top = (S.view==="task")?"home":(S.view==="party")?"parties":S.view;
   $("#nav").innerHTML=[["home","التكليفات"],["parties","الأطراف"],["settings","الفئات والإعدادات"]].map(([k,l])=>`<button data-nav="${k}" class="${top===k?"on":""}">${l}</button>`).join("");
   $("#nav").querySelectorAll("[data-nav]").forEach(b=>b.onclick=()=>{S.view=b.dataset.nav;render();scrollTo(0,0);});
@@ -529,7 +533,8 @@ function partyView(p){
 function linkingCard(){
   let h=`<div class="card" style="margin-bottom:14px"><h3>الربط بين صاحب المال والمُكلَّف</h3>`;
   if(S.mode==="sync"){
-    h+=`<p class="note">هذا الجهاز مربوط حالياً بصفته <b>${S.isOwner?"صاحب المال":"المُكلَّف"}</b>. تُرسَل تعديلاتك فوراً وتُسحَب تعديلات الطرف الآخر تلقائياً كل دقيقة أو دقيقتين (${S.lastSync?("آخر مزامنة: "+new Date(S.lastSync).toLocaleTimeString("ar")):"جارٍ الاتصال..."}).</p>
+    const roleLbl = S.role==="owner"?"صاحب المال":S.role==="witness"?"شاهد (اطّلاع فقط)":"المُكلَّف";
+    h+=`<p class="note">هذا الجهاز مربوط حالياً بصفته <b>${roleLbl}</b>. تُرسَل تعديلاتك فوراً وتُسحَب تعديلات الطرف الآخر تلقائياً كل دقيقة أو دقيقتين (${S.lastSync?("آخر مزامنة: "+new Date(S.lastSync).toLocaleTimeString("ar")):"جارٍ الاتصال..."}).</p>
      <div class="row" style="padding:6px 0;border-bottom:0"><span>رمز الإقران</span><b style="direction:ltr">${esc(fmtCode(S.syncCode))}</b></div>
      <div class="acts" style="margin-top:10px">
        <button class="btn ghost sm" data-act="shareCode">📤 مشاركة الرمز</button>
@@ -537,7 +542,7 @@ function linkingCard(){
        <button class="btn danger sm" data-act="unlinkSync">إلغاء الربط</button>
      </div>`;
   } else {
-    h+=`<p class="note">لم يُربط هذا الجهاز بعد. اختر أحد الخيارين:</p>
+    h+=`<p class="note">لم يُربط هذا الجهاز بعد. اختر أحد الخيارات:</p>
      <div class="two" style="margin-top:10px">
        <div class="card" style="box-shadow:none;border:1px solid var(--line)">
          <h3 style="font-size:15px">أنا صاحب المال</h3>
@@ -547,8 +552,13 @@ function linkingCard(){
        <div class="card" style="box-shadow:none;border:1px solid var(--line)">
          <h3 style="font-size:15px">أنا المُكلَّف</h3>
          <p class="note">أدخل الرمز الذي أرسله لك صاحب المال.</p>
-         <button class="btn ghost sm" data-act="joinCode">إدخال رمز الإقران</button>
+         <button class="btn ghost sm" data-act="joinCode" data-role="agent">إدخال رمز الإقران</button>
        </div>
+     </div>
+     <div class="card" style="box-shadow:none;border:1px solid var(--line);margin-top:10px">
+       <h3 style="font-size:15px">أنا شاهد (اطّلاع فقط)</h3>
+       <p class="note">أدخل رمز الإقران لعرض البيانات فقط، بدون إمكانية التعديل أو الإضافة.</p>
+       <button class="btn ghost sm" data-act="joinCode" data-role="witness">إدخال رمز الإقران كشاهد</button>
      </div>`;
   }
   h+=`</div>`;
@@ -895,13 +905,16 @@ function bindView(t,p){
     if(a==="installApp"){ if(deferredPrompt){ deferredPrompt.prompt(); const choice=await deferredPrompt.userChoice; if(choice.outcome==="accepted") toast("جارٍ التثبيت…"); deferredPrompt=null; S.canInstall=false; render(); } }
     if(a==="becomeOwner"){ el.disabled=true; await becomeOwner(); toast("أُنشئ رمز الإقران"); }
     if(a==="joinCode"){
-      modal(`<h3>إدخال رمز الإقران</h3><form id="f">
+      const joinRole = el.dataset.role==="witness" ? "witness" : "agent";
+      const titleTxt = joinRole==="witness" ? "إدخال رمز الإقران كشاهد" : "إدخال رمز الإقران";
+      modal(`<h3>${titleTxt}</h3><form id="f">
        <label class="f">الرمز الذي أرسله لك صاحب المال<input name="code" maxlength="12" required placeholder="xxxxx-xxxxx" style="direction:ltr;text-align:center;font-size:18px"></label>
+       ${joinRole==="witness"?`<p class="note">ستتمكن من الاطّلاع على البيانات فقط، بدون إمكانية التعديل أو الإضافة.</p>`:""}
        <p class="note" id="st"></p>
        <div class="acts"><button class="btn gold" type="submit" id="sv">ربط</button><button class="btn ghost" type="button" id="cx">إلغاء</button></div></form>`,(m,close)=>{
         const f=m.querySelector("#f"); m.querySelector("#cx").onclick=close;
         f.onsubmit=async ev=>{ ev.preventDefault(); const btn=m.querySelector("#sv"); btn.disabled=true; m.querySelector("#st").textContent="جارٍ الاتصال…";
-          const ok=await joinWithCode(f.code.value); if(ok) close(); else { btn.disabled=false; m.querySelector("#st").textContent=""; } };
+          const ok=await joinWithCode(f.code.value,joinRole); if(ok) close(); else { btn.disabled=false; m.querySelector("#st").textContent=""; } };
       });
     }
     if(a==="shareCode"){
